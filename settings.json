@@ -1,0 +1,26 @@
+{
+  "SeeDocsAt": "https://github.com/Microsoft/AirSim/blob/main/docs/settings_json.md",
+  "SettingsVersion": 1.2,
+  "SimMode": "Multirotor",
+  "ClockSpeed": 8.0,
+  "Vehicles": {
+    "Drone1": {
+      "VehicleType": "SimpleFlight",
+      "Cameras": {
+        "0": { "X": 0, "Y": 0, "Z": 0, "Pitch": 0,   "Roll": 0, "Yaw": 0, "ImageType": 1, "Width": 48, "Height": 48 } // Front, Depth only
+      },
+      "DefaultVehicleState": "Armed",
+      "EnableCollisionPassthrogh": false,
+      "EnableCollisions": true,
+      "AllowAPIAlways": true,
+      "RC": {
+        "RemoteControlID": 0,
+        "AllowAPIWhenDisconnected": false
+      }
+    }
+  },
+  "SubWindows": [
+    { "WindowID": 0, "ImageType": 1, "CameraName": "0", "Visible": true }
+  ]
+}
+ 
