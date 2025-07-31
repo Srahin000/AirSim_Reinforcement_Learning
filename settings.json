@@ -4,18 +4,56 @@
   "SimMode": "Multirotor",
   "ClockSpeed": 8.0,
   "Vehicles": {
-    "Drone1": {
+    "SimpleFlight": {
       "VehicleType": "SimpleFlight",
       "Cameras": {
-        "0": { "X": 0, "Y": 0, "Z": 0, "Pitch": 0,   "Roll": 0, "Yaw": 0, "ImageType": 1, "Width": 48, "Height": 48 } // Front, Depth only
+        "0": { "X": 0, "Y": 0, "Z": 0, "Pitch": 0, "Roll": 0, "Yaw": 0, "ImageType": 1, "Width": 48, "Height": 48 }
       },
       "DefaultVehicleState": "Armed",
-      "EnableCollisionPassthrogh": false,
+      "EnableCollisionPassthrough": false,
       "EnableCollisions": true,
-      "AllowAPIAlways": true,
+      "AllowAPIAlways": false,
       "RC": {
         "RemoteControlID": 0,
         "AllowAPIWhenDisconnected": false
+      },
+      "Sensors": {
+        "Lidar1": {
+          "SensorType": 6,
+          "Enabled": true,
+          "NumberOfChannels": 8,
+          "PointsPerSecond": 10000,
+          "X": 0,
+          "Y": 0,
+          "Z": -0.2,
+          "Roll": 0,
+          "Pitch": 0,
+          "Yaw": 0,
+          "VerticalFOVUpper": 5,
+          "VerticalFOVLower": -5,
+          "HorizontalFOVStart": -180,
+          "HorizontalFOVEnd": 180,
+          "DrawDebugPoints": true,
+          "DataFrame": "SensorLocalFrame"
+        },
+        "Lidar2": {
+          "SensorType": 6,
+          "Enabled": true,
+          "NumberOfChannels": 16,
+          "PointsPerSecond": 10000,
+          "X": 0,
+          "Y": 0,
+          "Z": -0.2,
+          "Roll": 0,
+          "Pitch": 0,
+          "Yaw": 0,
+          "VerticalFOVUpper": 10,
+          "VerticalFOVLower": -10,
+          "HorizontalFOVStart": -180,
+          "HorizontalFOVEnd": 180,
+          "DrawDebugPoints": true,
+          "DataFrame": "SensorLocalFrame"
+        }
       }
     }
   },
