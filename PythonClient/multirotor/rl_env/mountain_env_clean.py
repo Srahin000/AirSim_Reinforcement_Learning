@@ -375,11 +375,11 @@ class MountainPassEnv(gym.Env):
             
             # Penalty for rotation actions (left/right)
             if action == 1 or action == 2:  # Left/Right rotation actions
-                reward -= 0.3  # Base penalty for rotation
+                reward -= 1  # Base penalty for rotation
                 if yaw_change > 45:  # Additional penalty for large rotations
-                    reward -= 0.5
+                    reward -= 2
                 if yaw_change > 90:  # Heavy penalty for very large rotations
-                    reward -= 1.0
+                    reward -= 3
         
         # Altitude change penalty to discourage excessive up/down movement
         if self.prev_altitude is not None:
@@ -387,11 +387,11 @@ class MountainPassEnv(gym.Env):
             
             # Penalty for altitude actions (up/down)
             if action == 3 or action == 4:  # Up/Down actions
-                reward -= 0.2  # Base penalty for altitude change
+                reward -= 1  # Base penalty for altitude change
                 if altitude_change > 2.0:  # Additional penalty for large altitude changes
-                    reward -= 0.3
+                    reward -= 2
                 if altitude_change > 5.0:  # Heavy penalty for very large altitude changes
-                    reward -= 0.8
+                    reward -= 3
         
         # Small penalty for each step to encourage efficiency
         reward -= 0.1

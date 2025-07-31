@@ -402,3 +402,9 @@ PythonClient/docs/_build
 
 # clangd generated folder, for e.g. from VSCode clangd extension
 .cache/
+
+# Allow PPO training files and checkpoints
+!PythonClient/multirotor/rl_env/checkpoints/
+!PythonClient/multirotor/rl_env/ppo_clean_tensorboard/
+!PythonClient/multirotor/rl_env/checkpoints/**
+!PythonClient/multirotor/rl_env/ppo_clean_tensorboard/**
