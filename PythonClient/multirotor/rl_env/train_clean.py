@@ -21,7 +21,7 @@ import time
 def make_env():
     """Create the environment with monitoring."""
     return Monitor(MountainPassEnv(
-        max_steps=200,
+        max_steps=500,
         step_length=3.0,  # Reduced step length for more conservative movement
         altitude_step=2.0,  # Reduced altitude step
         lidar_safety_distance=2.0,
