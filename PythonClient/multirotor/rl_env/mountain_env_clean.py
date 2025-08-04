@@ -69,6 +69,7 @@ class MountainPassEnv(gym.Env):
         # Lidar data tracking
         self.last_lidar_ground_dist = None
         self.last_lidar_horizontal_dist = None
+        self.front_obstacle_threshold=1.5 #meters
         
         print(f"[INFO] Mountain Pass Environment initialized")
         print(f"[INFO] Goal position: ({self.goal_pos.x_val}, {self.goal_pos.y_val}, {self.goal_pos.z_val})")
@@ -189,8 +190,16 @@ class MountainPassEnv(gym.Env):
     
     def step(self, action):
         """Take a step in the environment."""
-        # Apply action
+        # Lidar-based auto-evade: yaw left or right if too close to front obstacle
+        horizontal_dist = self.last_lidar_horizontal_dist
+        if horizontal_dist is not None and horizontal_dist < self.front_obstacle_threshold:
+            print(f"[EVASION] Obstacle detected at {horizontal_dist:.2f}m! Performing evasive yaw.")
+            action = np.random.choice([1, 2])  # 1 = left, 2 = right
+
+        # Apply (possibly overridden) action
         self.apply_action(action)
+        # Apply action
+        #self.apply_action(action)
         time.sleep(0.05)
         
         # Get observation
