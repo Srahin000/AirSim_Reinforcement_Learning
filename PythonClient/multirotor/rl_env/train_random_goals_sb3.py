@@ -37,16 +37,17 @@ def make_env():
     """Create the environment with monitoring."""
     return Monitor(MountainPassRandomGoalsEnv(
         max_steps=500,
-        step_length=6.0,
-        altitude_step= 4.0,
-        lidar_safety_distance=2.0,
-        ground_safety_distance=1.5,
-        max_altitude=30.0,
-        min_altitude=1.0,
+        step_length= 4.0,
+        altitude_step= 2.0,
+        lidar_safety_distance = 0.25,
+        ground_safety_distance= 0.25,
+        max_altitude= 50.0,
+        min_altitude= 1.0,
         hard_reset_on_collision=True,
         safety_arm_steps=8,
-        conservative_spawning=False,
-        safety_leniency="more"  # Options: "more" (lenient), "normal" (default), "less" (strict)
+
+        safety_leniency="normal",  # Options: "more" (lenient), "normal" (default), "less" (strict)
+        verbose=True  # Enable verbose mode to see zone information
     ))
 
 class EpisodeLoggerCallback(BaseCallback):
@@ -264,10 +265,18 @@ if __name__ == "__main__":
     
     print(f"[CONFIG] Total timesteps: {args.timesteps}")
     print(f"[CONFIG] Save interval: {args.save_interval}")
-    print(f"[CONFIG] Environment: MountainPassRandomGoalsEnv with internal curriculum learning")
+    print(f"[CONFIG] Environment: MountainPassRandomGoalsEnv with zone-based curriculum learning")
+    print(f"[CONFIG] Safe Zones for Position Generation:")
+    print(f"  Zone 1 (Mountain Pass): x: -60.60 to -12.57, y: -62.67 to 37.09, z: -25.0 to -7.67 (NED: above ground)")
+    print(f"  Zone 2 (Valley):        x: 10.90 to 21.6,   y: -90.0 to -75.77,  z: -9.0 to -3.0 (NED: above ground)")
+    print(f"  Zone 3 (Plateau):       x: 43.7 to 59.4,   y: 32.65 to 46.85,  z: -4.0 to -3.0 (NED: above ground)")
+    print(f"  Zone 4 (High Mountain): x: 33.7 to 46.33,  y: 109.67 to 126.46, z: -42.0 to -28.0 (NED: above ground)")
+    print(f"[INFO] Note: Z coordinates use NED system (negative = above ground, positive = below ground)")
     print(f"[CONFIG] Curriculum parameters:")
     print(f"  - Start distance: 10.0m")
     print(f"  - Max distance: 100.0m") 
-    print(f"  - Growth rate: 0.5m per episode")
+    print(f"  - Growth rate: 0.5m every 50 episodes")
+    print(f"  - Zone selection: Random (1-4) for start positions")
+    print(f"  - Goal placement: Prefer different zones for variety")
     
     main() 

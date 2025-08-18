@@ -22,16 +22,15 @@ class MountainPassRandomGoalsEnv(gym.Env):
                  max_steps: int = 200,
                  step_length: float = 4.0,
                  altitude_step: float = 2.0,
-                 lidar_safety_distance: float = 2.0,
-                 ground_safety_distance: float = 1.5,
-                 max_altitude: float = 30.0,
+                 lidar_safety_distance: float = 0.25,
+                 ground_safety_distance: float = 0.25,
+                 max_altitude: float = 50.0,
                  min_altitude: float = 1.0,
                  hard_reset_on_collision: bool = True,
                  verbose: bool = False,
                  ignored_collision_objects: Optional[list] = None,
                  log_steps: bool = False,
                  safety_arm_steps: int = 3,
-                 conservative_spawning: bool = True,
                  safety_leniency: str = "normal"): # "more", "normal", "less"
         super().__init__()
         
@@ -54,15 +53,40 @@ class MountainPassRandomGoalsEnv(gym.Env):
         self.episode_count = 0
         self.curriculum_start_dist = 10.0
         self.curriculum_max_dist = 100.0
-        self.curriculum_growth_rate = 0.5
-        # Curriculum step schedule (in addition to growth rate): +5m every 5 episodes by default
-        self.curriculum_step_increase_m = 5.0
-        self.curriculum_step_every_episodes = 5
+        self.curriculum_growth_rate = 0.5      # +0.5m every 50 episodes
+        self.curriculum_episodes_per_increase = 50  # Increase every 50 episodes
 
-	    # Environment bounds for random placement
-        self.ENV_X_MIN, self.ENV_X_MAX = -74.0, 81.0
-        self.ENV_Y_MIN, self.ENV_Y_MAX = -96.0, 123.0
-        self.ENV_Z_MIN, self.ENV_Z_MAX = -15.0, 2.0
+	    # Safe zones for random position generation
+        self.safe_zones = [
+            # Zone 1: Mountain pass area
+            {
+                'x_range': (-60.60, -12.57),  # Fixed: min should be less than max
+                'y_range': (-62.67, 37.09),
+                'z_range': (-25.0, -7.67),    # Fixed: negative Z = above ground in NED system
+                'name': 'Mountain Pass'
+            },
+            # Zone 2: Valley area
+            {
+                'x_range': (10.90, 21.6),
+                'y_range': (-90.0, -75.77),
+                'z_range': (-9.0, -3.0),      # Fixed: negative Z = above ground in NED system
+                'name': 'Valley'
+            },
+            # Zone 3: Plateau area
+            {
+                'x_range': (43.7, 59.4),
+                'y_range': (32.65, 46.85),
+                'z_range': (-4.0, -3.0),      # Fixed: negative Z = above ground in NED system
+                'name': 'Plateau'
+            },
+            # Zone 4: High mountain area
+            {
+                'x_range': (33.7, 46.33),
+                'y_range': (109.67, 126.46),
+                'z_range': (-42.0, -28.0),    # Fixed: negative Z = above ground in NED system
+                'name': 'High Mountain'
+            }
+        ]
         
         # Action and observation spaces
         self.action_space = spaces.Discrete(5)  # forward, left, right, up, down
@@ -90,11 +114,11 @@ class MountainPassRandomGoalsEnv(gym.Env):
         # Goal and start positions
         self.goal_pos = None
         self.start_pos = None
+        self.start_zone = None  # Track which zone was used for start
         
         # Lidar data tracking
         self.last_lidar_ground_dist = None
         self.last_lidar_horizontal_dist = None
-        self.front_obstacle_threshold=1.5 #meters
         
         # Verbosity
         self.verbose = verbose
@@ -102,8 +126,7 @@ class MountainPassRandomGoalsEnv(gym.Env):
         self.log_steps = log_steps
         self._episode_step_trace = []
         self.safety_arm_steps = max(0, int(safety_arm_steps))
-        self.conservative_spawning = conservative_spawning
-        
+
         # Safety leniency system
         self.safety_leniency = safety_leniency.lower()
         if self.safety_leniency == "less":
@@ -131,6 +154,7 @@ class MountainPassRandomGoalsEnv(gym.Env):
         print(f"[INFO] Mountain Pass Environment initialized with {leniency_description} safety settings")
         print(f"[INFO] Effective safety distances: Lidar={self.effective_lidar_safety:.1f}m, Ground={self.effective_ground_safety:.1f}m")
         print(f"[INFO] Effective altitude range: {self.effective_min_altitude:.1f}m to {self.effective_max_altitude:.1f}m")
+        print(f"[INFO] Using 4 predefined safe zones for position generation")
         
         # Print training recommendations
         self._print_training_recommendations()
@@ -165,51 +189,82 @@ class MountainPassRandomGoalsEnv(gym.Env):
         
         print(f"[INFO] ================================\n")
 
+    def generate_random_position_from_zones(self) -> Tuple[airsim.Vector3r, int]:
+        """Generate a random position from one of the 4 predefined safe zones."""
+        # Randomly select a zone (1-4)
+        zone_idx = random.randint(0, 3)
+        zone = self.safe_zones[zone_idx]
+        
+        # Generate random coordinates within the zone
+        x = random.uniform(zone['x_range'][0], zone['x_range'][1])
+        y = random.uniform(zone['y_range'][0], zone['y_range'][1])
+        z = random.uniform(zone['z_range'][0], zone['z_range'][1])
+        
+        # Create position vector
+        position = airsim.Vector3r(x, y, z)
+        
+        if self.verbose:
+            print(f"[ZONE {zone_idx + 1}] Generated position in {zone['name']}: ({x:.2f}, {y:.2f}, {z:.2f})")
+        
+        return position, zone_idx + 1
+
     def generate_random_position(self):
-        """Generate a random position that's above ground and in free space."""
-        max_attempts = 100 if not self.conservative_spawning else 200
+        """Generate a random position from predefined safe zones."""
+        max_attempts = 50
         
         for attempt in range(max_attempts):
-            x = random.uniform(self.ENV_X_MIN, self.ENV_X_MAX)
-            y = random.uniform(self.ENV_Y_MIN, self.ENV_Y_MAX)
+            # Generate position from random zone
+            candidate_pos, zone_num = self.generate_random_position_from_zones()
             
-            # Get terrain height at this X,Y location
-            try:
-                # Query terrain height at this location
-                terrain_height = self.client.simGetTerrainHeight(x, y)
-                if terrain_height is None:
-                    continue
-                
-                # Ensure we're above terrain with sufficient clearance
-                # Use more conservative clearance in conservative mode
-                clearance_multiplier = 2.5 if self.conservative_spawning else 2.0
-                min_height_above_terrain = self.min_altitude * clearance_multiplier
-                z_above_terrain = terrain_height - min_height_above_terrain  # NED coordinates
-                
-                # Keep within environment Z bounds
-                z_above_terrain = max(self.ENV_Z_MIN + 5.0, z_above_terrain)  # More conservative lower bound
-                z_above_terrain = min(self.ENV_Z_MAX - 5.0, z_above_terrain)  # More conservative upper bound
-                
-                candidate_pos = airsim.Vector3r(x, y, z_above_terrain)
-                
-                # Additional validation: check if this position is in free space
-                # Use stricter clearance in conservative mode
-                clearance = 5.0 if self.conservative_spawning else 3.0
-                if self._is_position_free(candidate_pos, clearance=clearance):
-                    return candidate_pos
-                    
-            except Exception as e:
-                if self.verbose:
-                    print(f"[DEBUG] Terrain height query failed: {e}")
-                continue
+            # Validate the position
+            if self._validate_position(candidate_pos, zone_num):
+                return candidate_pos
         
-        # Fallback: use conservative height if all attempts fail
+        # Fallback: use zone 1 with conservative coordinates
         if self.verbose:
-            print("[WARNING] Failed to find valid position, using fallback")
-        x = random.uniform(self.ENV_X_MIN, self.ENV_X_MIN + 20.0)  # Stay near edge
-        y = random.uniform(self.ENV_Y_MIN, self.ENV_Y_MIN + 20.0)  # Stay near edge
-        z = self.ENV_Z_MIN + 15.0  # Conservative height above minimum
+            print("[WARNING] Failed to find valid position in zones, using fallback")
+        zone = self.safe_zones[0]
+        x = random.uniform(zone['x_range'][0] + 5, zone['x_range'][1] - 5)  # Stay away from edges
+        y = random.uniform(zone['y_range'][0] + 5, zone['y_range'][1] - 5)
+        z = zone['z_range'][0] + 2  # Conservative height
         return airsim.Vector3r(x, y, z)
+
+    def _validate_position(self, position: airsim.Vector3r, zone_num: int) -> bool:
+        """Validate if a position is safe and suitable for spawning."""
+        try:
+            # Check if position is within zone bounds
+            zone = self.safe_zones[zone_num - 1]
+            
+            # Check X coordinate
+            x_ok = zone['x_range'][0] <= position.x_val <= zone['x_range'][1]
+            # Check Y coordinate  
+            y_ok = zone['y_range'][0] <= position.y_val <= zone['y_range'][1]
+            # Check Z coordinate
+            z_ok = zone['z_range'][0] <= position.z_val <= zone['z_range'][1]
+            
+            if not x_ok or not y_ok or not z_ok:
+                if self.verbose:
+                    print(f"[VALIDATION] Position {position} is OUTSIDE zone {zone_num} bounds:")
+                    print(f"  X: {position.x_val:.2f} (range: {zone['x_range'][0]:.2f} to {zone['x_range'][1]:.2f}) - {'OK' if x_ok else 'FAIL'}")
+                    print(f"  Y: {position.y_val:.2f} (range: {zone['y_range'][0]:.2f} to {zone['y_range'][1]:.2f}) - {'OK' if y_ok else 'FAIL'}")
+                    print(f"  Z: {position.z_val:.2f} (range: {zone['z_range'][0]:.2f} to {zone['z_range'][1]:.2f}) - {'OK' if z_ok else 'FAIL'}")
+                return False
+            
+            # Check if position is in free space
+            if not self._is_position_free(position, clearance=3.0):
+                return False
+            
+            # Check open air
+            if not self._is_open_air(position, up_clearance_m=3.0):
+                return False
+            
+            # Additional terrain analysis for conservative spawning
+            return True
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"[DEBUG] Position validation failed: {e}")
+            return False
 
     def _local_ned_offset_to_geopoint(self, origin_geo: airsim.GeoPoint, d_north_m: float, d_east_m: float, d_up_m: float) -> airsim.GeoPoint:
         """Approximate conversion from local NED offset (meters) to GeoPoint around origin_geo."""
@@ -397,70 +452,59 @@ class MountainPassRandomGoalsEnv(gym.Env):
         return None
 
     def generate_goal_near_start(self, start: airsim.Vector3r, max_distance: float):
-        """Sample reachable goal near start with increasing radius, using line-of-sight checks."""
-        min_radius = 5.0
-        attempts = 120
-        # Try multiple shells from near to far up to max_distance
-        for _ in range(attempts):
-            angle = random.uniform(0, 2 * math.pi)
-            radius = random.uniform(min_radius, max_distance)
-            dx = radius * math.cos(angle)
-            dy = radius * math.sin(angle)
+        """Generate a goal position near the start, preferably in a different zone."""
+        # Try to place goal in a different zone for variety
+        other_zones = [i for i in range(4) if i != (self.start_zone - 1)]
+        random.shuffle(other_zones)
+        
+        # First try: goal in different zone
+        for zone_idx in other_zones:
+            zone = self.safe_zones[zone_idx]
+            for attempt in range(20):
+                x = random.uniform(zone['x_range'][0], zone['x_range'][1])
+                y = random.uniform(zone['y_range'][0], zone['y_range'][1])
+                z = random.uniform(zone['z_range'][0], zone['z_range'][1])
+                
+                candidate = airsim.Vector3r(x, y, z)
+                
+                # Check if within max distance and has line of sight
+                dist = np.linalg.norm(np.array([x, y, z]) - np.array([start.x_val, start.y_val, start.z_val]))
+                if dist <= max_distance and self._has_line_of_sight(start, candidate):
+                    if self.verbose:
+                        print(f"[GOAL] Placed in different zone {zone_idx + 1} ({zone['name']})")
+                    return candidate
+        
+        # Fallback: goal in same zone but different area
+        zone = self.safe_zones[self.start_zone - 1]
+        for attempt in range(30):
+            x = random.uniform(zone['x_range'][0], zone['x_range'][1])
+            y = random.uniform(zone['y_range'][0], zone['y_range'][1])
+            z = random.uniform(zone['z_range'][0], zone['z_range'][1])
             
-            x = start.x_val + dx
-            y = start.y_val + dy
-            
-            # Keep within env bounds
-            if not (self.ENV_X_MIN <= x <= self.ENV_X_MAX and self.ENV_Y_MIN <= y <= self.ENV_Y_MAX):
-                continue
-            
-            # Get terrain height at goal location and ensure it's above ground
-            try:
-                terrain_height = self.client.simGetTerrainHeight(x, y)
-                if terrain_height is None:
-                    continue
-                
-                # Ensure goal is above terrain with sufficient clearance
-                min_height_above_terrain = self.min_altitude + 1.0
-                z_above_terrain = terrain_height - min_height_above_terrain
-                
-                # Add small variation to start altitude, but keep within bounds
-                z_variation = random.uniform(-2.0, 2.0)
-                z = z_above_terrain + z_variation
-                
-                # Keep within altitude limits
-                z = max(self.ENV_Z_MIN + 1, z)
-                z = min(self.ENV_Z_MAX - 1, z)
-                
-            except Exception:
-                # Fallback: use similar altitude as start
-                z = start.z_val + random.uniform(-2.0, 2.0)
-                z = max(self.ENV_Z_MIN + 1, z)
-                z = min(self.ENV_Z_MAX - 1, z)
-
             candidate = airsim.Vector3r(x, y, z)
             
-            # Line of sight check; if clear, accept
-            if self._has_line_of_sight(start, candidate):
+            # Ensure minimum distance from start
+            dist = np.linalg.norm(np.array([x, y, z]) - np.array([start.x_val, start.y_val, start.z_val]))
+            if dist >= 5.0 and dist <= max_distance and self._has_line_of_sight(start, candidate):
+                if self.verbose:
+                    print(f"[GOAL] Placed in same zone {self.start_zone} ({zone['name']})")
                 return candidate
-
-        # Fallback: aim some meters forward from start
+        
+        # Final fallback: goal forward from start
         yaw_forward_rad = 0.0
         x = start.x_val + min(max_distance, 10.0) * math.cos(yaw_forward_rad)
         y = start.y_val + min(max_distance, 10.0) * math.sin(yaw_forward_rad)
+        z = start.z_val + random.uniform(-2.0, 2.0)
         
-        # Get terrain height for fallback goal
-        try:
-            terrain_height = self.client.simGetTerrainHeight(x, y)
-            if terrain_height is not None:
-                z = terrain_height - (self.min_altitude + 1.0)
-                z = max(self.ENV_Z_MIN + 1, z)
-                z = min(self.ENV_Z_MAX - 1, z)
-            else:
-                z = start.z_val
-        except Exception:
-            z = start.z_val
-            
+        # Keep within zone bounds
+        zone = self.safe_zones[self.start_zone - 1]
+        x = max(zone['x_range'][0], min(zone['x_range'][1], x))
+        y = max(zone['y_range'][0], min(zone['y_range'][1], y))
+        z = max(zone['z_range'][0], min(zone['z_range'][1], z))
+        
+        if self.verbose:
+            print(f"[GOAL] Using fallback position in zone {self.start_zone}")
+        
         return airsim.Vector3r(x, y, z)
     
     def get_lidar_data(self) -> Tuple[Optional[float], Optional[float]]:
@@ -562,14 +606,13 @@ class MountainPassRandomGoalsEnv(gym.Env):
 
         self.episode_count += 1
         # Curriculum: base linear growth + step increase every N episodes
-        base = self.curriculum_start_dist + self.curriculum_growth_rate * self.episode_count
-        step_bonus = (self.episode_count // self.curriculum_step_every_episodes) * self.curriculum_step_increase_m
-        max_dist = min(base + step_bonus, self.curriculum_max_dist)
+        base = self.curriculum_start_dist + self.curriculum_growth_rate * (self.episode_count // self.curriculum_episodes_per_increase)
+        max_dist = min(base, self.curriculum_max_dist)
 
-        # Place start at a valid, safe, non-colliding position by sampling and checking
+        # Place start at a valid, safe, non-colliding position using zone-based generation
         start_found = False
         for attempt in range(50):
-            candidate_start = self.generate_random_position()
+            candidate_start, zone_num = self.generate_random_position_from_zones()
             
             # Additional validation: check if position is reasonable
             if candidate_start is None:
@@ -614,9 +657,10 @@ class MountainPassRandomGoalsEnv(gym.Env):
 
                 if ground_ok and horiz_ok and open_air and terrain_ok:
                     self.start_pos = candidate_start
+                    self.start_zone = zone_num
                     start_found = True
                     if self.verbose:
-                        print(f"[DEBUG] Valid start position found after {attempt + 1} attempts")
+                        print(f"[DEBUG] Valid start position found in zone {zone_num} after {attempt + 1} attempts")
                     break
                 else:
                     if self.verbose:
@@ -630,14 +674,19 @@ class MountainPassRandomGoalsEnv(gym.Env):
         if not start_found:
             if self.verbose:
                 print("[WARNING] Failed to find valid start position, using fallback")
-            self.start_pos = self.generate_random_position()
+            self.start_pos, self.start_zone = self.generate_random_position_from_zones()
 
         # Use start to generate a reachable goal
         self.goal_pos = self.generate_goal_near_start(self.start_pos, max_dist)
 
-        print(f"[CURRICULUM] Episode {self.episode_count} - Max Distance: {max_dist:.1f}")
-        print(f"[START] ({self.start_pos.x_val:.2f}, {self.start_pos.y_val:.2f}, {self.start_pos.z_val:.2f})")
-        print(f"[GOAL]  ({self.goal_pos.x_val:.2f}, {self.goal_pos.y_val:.2f}, {self.goal_pos.z_val:.2f})")
+        # Debug the generated positions using the debug_position function
+        if self.verbose:
+            print(f"\n[CURRICULUM] Episode {self.episode_count} - Max Distance: {max_dist:.1f}")
+            print(f"[START] Zone {self.start_zone} - ({self.start_pos.x_val:.2f}, {self.start_pos.y_val:.2f}, {self.start_pos.z_val:.2f})")
+            print(f"[GOAL]  ({self.goal_pos.x_val:.2f}, {self.goal_pos.y_val:.2f}, {self.goal_pos.z_val:.2f})")
+            
+            # Use debug_position function to verify start position
+            self.debug_position(self.start_pos, f"START POSITION (Zone {self.start_zone})")
 	
         # Move to start and takeoff to a safe altitude above ground before episode begins
         self.client.moveToPositionAsync(
@@ -690,12 +739,6 @@ class MountainPassRandomGoalsEnv(gym.Env):
         ground_dist, horizontal_dist = self.get_lidar_data()
         self.last_lidar_ground_dist = ground_dist
         self.last_lidar_horizontal_dist = horizontal_dist
-
-        # Lidar-based auto-evade: yaw left or right if too close to front obstacle
-        if horizontal_dist is not None and horizontal_dist < self.front_obstacle_threshold:
-            if self.verbose:
-                print(f"[EVASION] Obstacle detected at {horizontal_dist:.2f}m! Performing evasive yaw.")
-            action = np.random.choice([1, 2])  # 1 = left, 2 = right
 
         # Apply (possibly overridden) action
         self.apply_action(action)
@@ -1122,6 +1165,16 @@ class MountainPassRandomGoalsEnv(gym.Env):
         except Exception as e:
             print(f"[DEBUG] Debug position failed: {e}")
     
+    def print_zone_info(self):
+        """Print information about all available safe zones."""
+        print(f"\n[INFO] === SAFE ZONES FOR POSITION GENERATION ===")
+        for i, zone in enumerate(self.safe_zones):
+            print(f"  Zone {i+1} ({zone['name']}):")
+            print(f"    X: {zone['x_range'][0]:.2f} to {zone['x_range'][1]:.2f}")
+            print(f"    Y: {zone['y_range'][0]:.2f} to {zone['y_range'][1]:.2f}")
+            print(f"    Z: {zone['z_range'][0]:.2f} to {zone['z_range'][1]:.2f}")
+        print(f"===============================================\n")
+    
     def close(self):
         """Clean up the environment."""
         try:
@@ -1131,8 +1184,8 @@ class MountainPassRandomGoalsEnv(gym.Env):
             pass
 
 def main():
-    """Test the environment with different safety leniency levels."""
-    print("[INFO] Testing Mountain Pass Environment with Safety Leniency System...")
+    """Test the environment with different safety leniency levels and zone-based positioning."""
+    print("[INFO] Testing Mountain Pass Environment with Zone-Based Position Generation...")
     
     # Test different leniency levels
     leniency_levels = ["more", "normal", "less"]
@@ -1145,9 +1198,11 @@ def main():
         # Create environment with specific leniency
         env = MountainPassRandomGoalsEnv(
             verbose=True, 
-            conservative_spawning=True,
             safety_leniency=leniency
         )
+        
+        # Display zone information
+        env.print_zone_info()
         
         # Test one episode per leniency level
         print(f"\n[INFO] Testing reset with {leniency} leniency...")
@@ -1157,7 +1212,7 @@ def main():
             
             # Debug the generated positions
             if hasattr(env, 'start_pos') and env.start_pos:
-                env.debug_position(env.start_pos, f"START ({leniency.upper()})")
+                env.debug_position(env.start_pos, f"START ({leniency.upper()}) - Zone {env.start_zone}")
             if hasattr(env, 'goal_pos') and env.goal_pos:
                 env.debug_position(env.goal_pos, f"GOAL ({leniency.upper()})")
             
@@ -1185,6 +1240,12 @@ def main():
     print(f"\n{'='*60}")
     print(f"[INFO] FINAL TRAINING RECOMMENDATIONS")
     print(f"{'='*60}")
+    print(f"[INFO] 🎯 Zone-Based Position Generation:")
+    print(f"     • 4 predefined safe zones ensure valid spawn points")
+    print(f"     • Random zone selection (1-4) for start positions")
+    print(f"     • Goals prefer different zones for training variety")
+    print(f"     • All zones validated for safety and accessibility")
+    print(f"")
     print(f"[INFO] 🎯 Start with 'more' leniency for:")
     print(f"     • Initial exploration and learning")
     print(f"     • Faster progress in early training")
