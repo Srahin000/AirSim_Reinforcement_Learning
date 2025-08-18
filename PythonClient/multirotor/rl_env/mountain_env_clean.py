@@ -69,7 +69,12 @@ class MountainPassEnv(gym.Env):
         # Lidar data tracking
         self.last_lidar_ground_dist = None
         self.last_lidar_horizontal_dist = None
-        self.front_obstacle_threshold=1.5 #meters
+        self.front_obstacle_threshold = 3.0  # Increased threshold for earlier detection
+        self.critical_obstacle_threshold = 1.5  # Critical distance for immediate action
+        
+        # Obstacle avoidance tracking
+        self.last_evasion_direction = None  # Track last evasion direction
+        self.evasion_streak = 0  # Track consecutive evasions in same direction
         
         print(f"[INFO] Mountain Pass Environment initialized")
         print(f"[INFO] Goal position: ({self.goal_pos.x_val}, {self.goal_pos.y_val}, {self.goal_pos.z_val})")
@@ -88,6 +93,35 @@ class MountainPassEnv(gym.Env):
         except Exception as e:
             print(f"[LIDAR ERROR] Error getting lidar data: {e}")
             return None, None
+    
+    def get_directional_lidar_data(self) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """Get lidar data with directional awareness (left, center, right)."""
+        try:
+            # Get current drone orientation
+            state = self.client.getMultirotorState()
+            current_yaw = airsim.to_eularian_angles(state.kinematics_estimated.orientation)[2] * 180 / np.pi
+            
+            # Get lidar data
+            lidar_ground = self.client.getLidarData(lidar_name="Lidar1", vehicle_name=self.vehicle_name)
+            lidar_horizontal = self.client.getLidarData(lidar_name="Lidar2", vehicle_name=self.vehicle_name)
+            
+            ground_dist = self._process_lidar_points(lidar_ground.point_cloud)
+            horizontal_dist = self._process_lidar_points(lidar_horizontal.point_cloud)
+            
+            # For now, we'll use the horizontal distance as center distance
+            # In a more sophisticated setup, you'd have separate lidars for left/right
+            center_dist = horizontal_dist
+            
+            # Estimate left and right distances based on current orientation
+            # This is a simplified approach - ideally you'd have dedicated left/right lidars
+            left_dist = center_dist * 1.1  # Slightly higher (safer) estimate
+            right_dist = center_dist * 1.1  # Slightly higher (safer) estimate
+            
+            return left_dist, center_dist, right_dist
+            
+        except Exception as e:
+            print(f"[LIDAR ERROR] Error getting directional lidar data: {e}")
+            return None, None, None
     
     def _process_lidar_points(self, points) -> Optional[float]:
         """Process lidar point cloud to find minimum distance."""
@@ -183,6 +217,10 @@ class MountainPassEnv(gym.Env):
         self.prev_yaw = None  # Reset yaw tracking
         self.prev_altitude = None  # Reset altitude tracking
         
+        # Reset evasion tracking
+        self.last_evasion_direction = None
+        self.evasion_streak = 0
+        
         time.sleep(0.1)
         obs = self.get_observation()
         info = {}
@@ -190,16 +228,24 @@ class MountainPassEnv(gym.Env):
     
     def step(self, action):
         """Take a step in the environment."""
-        # Lidar-based auto-evade: yaw left or right if too close to front obstacle
-        horizontal_dist = self.last_lidar_horizontal_dist
-        if horizontal_dist is not None and horizontal_dist < self.front_obstacle_threshold:
-            print(f"[EVASION] Obstacle detected at {horizontal_dist:.2f}m! Performing evasive yaw.")
-            action = np.random.choice([1, 2])  # 1 = left, 2 = right
-
+        # Get directional lidar data for better obstacle avoidance
+        left_dist, center_dist, right_dist = self.get_directional_lidar_data()
+        
+        # Intelligent obstacle avoidance
+        if center_dist is not None:
+            if center_dist < self.critical_obstacle_threshold:
+                # Critical situation - immediate evasive action
+                print(f"[CRITICAL] Obstacle at {center_dist:.2f}m! Emergency evasion!")
+                evasion_direction = self._choose_evasion_direction(left_dist, right_dist, emergency=True)
+                self.rotate_to_avoid_obstacle(evasion_direction, emergency=True)
+                action = 0  # After emergency rotation, move forward
+            elif center_dist < self.front_obstacle_threshold:
+                # Warning situation - proactive evasion
+                print(f"[WARNING] Obstacle at {center_dist:.2f}m! Proactive evasion.")
+                action = self._choose_evasion_direction(left_dist, right_dist, emergency=False)
+        
         # Apply (possibly overridden) action
         self.apply_action(action)
-        # Apply action
-        #self.apply_action(action)
         time.sleep(0.05)
         
         # Get observation
@@ -263,6 +309,54 @@ class MountainPassEnv(gym.Env):
         
         return obs, reward, terminated, truncated, info
     
+    def _choose_evasion_direction(self, left_dist: Optional[float], right_dist: Optional[float], emergency: bool = False) -> int:
+        """Choose the best evasion direction based on available space."""
+        # Default to random if no directional data available
+        if left_dist is None or right_dist is None:
+            return np.random.choice([1, 2])  # 1 = left, 2 = right
+        
+        # Calculate safety margins
+        left_safety = left_dist - self.lidar_safety_distance if left_dist is not None else 0
+        right_safety = right_dist - self.lidar_safety_distance if right_dist is not None else 0
+        
+        # Determine which direction is safer
+        if left_safety > right_safety and left_safety > 0:
+            # Left is safer
+            if self.last_evasion_direction == 1:
+                self.evasion_streak += 1
+            else:
+                self.evasion_streak = 1
+            self.last_evasion_direction = 1
+            return 1  # Left
+        elif right_safety > left_safety and right_safety > 0:
+            # Right is safer
+            if self.last_evasion_direction == 2:
+                self.evasion_streak += 1
+            else:
+                self.evasion_streak = 1
+            self.last_evasion_direction = 2
+            return 2  # Right
+        else:
+            # Both directions are equally bad or good, use smart random
+            if self.evasion_streak > 2:
+                # If we've been going the same direction too long, try the other
+                opposite_direction = 2 if self.last_evasion_direction == 1 else 1
+                self.evasion_streak = 1
+                self.last_evasion_direction = opposite_direction
+                return opposite_direction
+            else:
+                # Random choice with slight bias toward the last direction
+                if self.last_evasion_direction is not None:
+                    # 70% chance to continue in same direction, 30% to switch
+                    if np.random.random() < 0.7:
+                        return self.last_evasion_direction
+                
+                # Choose randomly
+                direction = np.random.choice([1, 2])
+                self.last_evasion_direction = direction
+                self.evasion_streak = 1
+                return direction
+    
     def apply_action(self, action):
         """Apply the given action to the drone."""
         state = self.client.getMultirotorState()
@@ -284,9 +378,9 @@ class MountainPassEnv(gym.Env):
             vx = step_length * np.cos(np.deg2rad(yaw))
             vy = step_length * np.sin(np.deg2rad(yaw))
         elif action == 1:  # left (rotate -30 deg)
-            self.rotate_by(-30)
+            self.rotate_to_avoid_obstacle(1, emergency=False)
         elif action == 2:  # right (rotate +30 deg)
-            self.rotate_by(30)
+            self.rotate_to_avoid_obstacle(2, emergency=False)
         elif action == 3:  # up
             vz = -altitude_step
         elif action == 4:  # down
@@ -299,6 +393,21 @@ class MountainPassEnv(gym.Env):
     def rotate_by(self, delta_yaw):
         """Rotate the drone by the given angle."""
         self.client.rotateByYawRateAsync(delta_yaw, 1).join()
+    
+    def rotate_to_avoid_obstacle(self, direction: int, emergency: bool = False):
+        """Rotate to avoid obstacle with appropriate angle based on urgency."""
+        if emergency:
+            # Emergency rotation - larger angle for immediate avoidance
+            if direction == 1:  # Left
+                self.client.rotateByYawRateAsync(-45, 1).join()  # Larger angle for emergency
+            else:  # Right
+                self.client.rotateByYawRateAsync(45, 1).join()   # Larger angle for emergency
+        else:
+            # Normal rotation - smaller angle for gradual avoidance
+            if direction == 1:  # Left
+                self.client.rotateByYawRateAsync(-30, 1).join()  # Normal angle
+            else:  # Right
+                self.client.rotateByYawRateAsync(30, 1).join()   # Normal angle
     
     def get_observation(self):
         """Get observation including depth camera and lidar data."""
